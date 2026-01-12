@@ -1,7 +1,26 @@
+//! An implementation of the [shared mime info spec](https://www.freedesktop.org/wiki/Software/shared-mime-info/)
+//!
+//! See `MimeSearcher` functions for full list of operations.
+//!
+//! # Example
+//! Find icon name for file from filename:
+//!
+//! ```
+//! use shared_mime_info as smi;
+//!
+//! let searcher = smi::MimeSearcher::new().unwrap();
+//!
+//! let mime_type =
+//! searcher.find_mimetype_from_filepath(&std::path::PathBuf::from("foo.pdf")).unwrap();
+//! let icon_name = searcher.find_icon_for_mimetype(mime_type).unwrap();
+//! ```
+//!
+
 // https://specifications.freedesktop.org/shared-mime-info/0.21/ar01s02.html
 
 use std::{collections::HashMap, ffi::CStr, path::Path};
 
+/// String wrapper. Used to make typing clearer
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct MimeType(pub String);
 
@@ -11,6 +30,7 @@ impl From<String> for MimeType {
     }
 }
 
+/// The mime type searcher, loads all data from file system when created.
 #[derive(Debug)]
 pub struct MimeSearcher {
     mime_cache: MimeCache,
@@ -256,10 +276,16 @@ impl MimeSearcher {
         })
     }
 
+    /// Finds the icon name for a mimetype. To get the actual image you need to use a crate like
+    /// `icon`
     pub fn find_icon_for_mimetype(&self, mime_type: MimeType) -> Result<String, Error> {
         self.mime_cache.find_icon_for_mimetype(mime_type)
     }
 
+    /// Finds the mimetype from a filepath.
+    /// First looks at the file extension, then does proper globbing.
+    /// UNIMPLEMENTED:
+    /// If those both fail, it can use magic (numbers).
     pub fn find_mimetype_from_filepath(&self, path: &Path) -> Option<MimeType> {
         self.globber.lookup_filename(path)
     }
