@@ -1,7 +1,30 @@
+use std::{collections::HashMap, ffi::CStr};
+
 #[derive(Debug, PartialEq, Eq)]
-pub struct MimeCache {
-    header: MimeCacheHeader,
-    data: Vec<u8>,
+pub struct MimeType(pub String);
+
+impl From<String> for MimeType {
+    fn from(value: String) -> Self {
+        MimeType(value)
+    }
+}
+
+#[derive(Debug)]
+pub struct MimeSearcher {
+    mime_cache: MimeCache,
+    globber: Globber,
+}
+
+#[derive(Debug)]
+struct MimeCache {
+    cache_header: MimeCacheHeader,
+    cache_data: Vec<u8>,
+}
+
+#[derive(Debug)]
+struct Globber {
+    globs2_data: String,
+    simple_globing_map: HashMap<String, MimeType>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -21,6 +44,8 @@ struct MimeCacheHeader {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Error {
+    MimeCacheNotFound,
+    Globs2NotFound,
     MissingHeader,
     MissingGenericIconsList,
     NoIconFound,
@@ -29,18 +54,18 @@ pub enum Error {
 }
 
 impl MimeCache {
-    pub fn new() -> Result<Self, Error> {
-        let contents = std::fs::read("/usr/share/mime/mime.cache").unwrap();
+    fn new() -> Result<Self, Error> {
+        let cache_contents =
+            std::fs::read("/usr/share/mime/mime.cache").map_err(|_| Error::MimeCacheNotFound)?;
         Ok(MimeCache {
-            header: MimeCacheHeader::read_header(
-                contents
+            cache_header: MimeCacheHeader::read_header(
+                cache_contents
                     .get(0..40)
                     .ok_or(Error::MissingHeader)?
                     .try_into()
                     .expect("cant fail"),
             ),
-
-            data: contents,
+            cache_data: cache_contents,
         })
     }
 
@@ -52,38 +77,121 @@ impl MimeCache {
     // IconListEntry:
     // 4			CARD32		MIME_TYPE_OFFSET
     // 4			CARD32		ICON_NAME_OFFSET
-    pub fn find_icon_for_mimetype(&self, mime_type: &str) -> Result<String, Error> {
+    fn find_icon_for_mimetype(&self, mime_type: &str) -> Result<MimeType, Error> {
         const STRIDE: usize = 8;
 
-        let start = self.header.generic_icons_list_offset as usize;
+        let start = self.cache_header.generic_icons_list_offset as usize;
 
-        let num_icons = get_u32_panics(self.data.as_slice(), start);
+        let num_icons = get_u32_panics(self.cache_data.as_slice(), start);
 
         let list_start = start + 4;
 
         for i in (list_start..list_start + num_icons as usize * STRIDE).step_by(STRIDE) {
-            let mime_type_offset = get_u32_panics(self.data.as_slice(), i) as usize;
+            let mime_type_offset = get_u32_panics(self.cache_data.as_slice(), i) as usize;
             let found_mime_type =
-                std::ffi::CStr::from_bytes_until_nul(self.data.get(mime_type_offset..).unwrap())
+                CStr::from_bytes_until_nul(self.cache_data.get(mime_type_offset..).unwrap())
                     .map_err(|_e| Error::CstrUnterminated)?
                     .to_str()
                     .map_err(|_| Error::InvalidUTF8)?;
 
             if found_mime_type == mime_type {
                 // Only load icon name if we have matched
-                let icon_name_offset = get_u32_panics(self.data.as_slice(), i + 4) as usize;
-                let icon_name = std::ffi::CStr::from_bytes_until_nul(
-                    self.data.get(icon_name_offset..).unwrap(),
-                )
-                .map_err(|_e| Error::CstrUnterminated)?
-                .to_str()
-                .map_err(|_| Error::InvalidUTF8)?;
+                let icon_name_offset = get_u32_panics(self.cache_data.as_slice(), i + 4) as usize;
+                let icon_name =
+                    CStr::from_bytes_until_nul(self.cache_data.get(icon_name_offset..).unwrap())
+                        .map_err(|_e| Error::CstrUnterminated)?
+                        .to_str()
+                        .map_err(|_| Error::InvalidUTF8)?;
 
-                return Ok(icon_name.to_string());
+                return Ok(icon_name.to_string().into());
             }
         }
 
         Err(Error::NoIconFound)
+    }
+}
+
+impl Globber {
+    fn new(cache: &MimeCache) -> Result<Self, Error> {
+        let mut hashmap = HashMap::new();
+        for (k, v) in Self::get_globs_from_cache(cache)?
+            .into_iter()
+            .filter(|(k, _)| k.starts_with('*') && !k.contains('?') && !k.contains('['))
+        {
+            hashmap.insert(k, v);
+        }
+
+        let globs2_data =
+            std::fs::read_to_string("/usr/share/mime/globs2").map_err(|_| Error::Globs2NotFound)?;
+
+        println!("glob hashmap: {:#?}", hashmap);
+
+        Ok(Globber {
+            globs2_data,
+
+            simple_globing_map: hashmap,
+        })
+    }
+
+    // GlobList:
+    // 4			CARD32		N_GLOBS
+    // 12*N_GLOBS	GlobEntry
+    //
+    // GlobEntry:
+    //
+    // 4			CARD32		GLOB_OFFSET
+    // 4			CARD32		MIME_TYPE_OFFSET
+    // 4			CARD32		WEIGHT in lower 8 bits
+    //                              FLAGS in rest:
+    //                              0x100 = case-sensitive
+    fn get_globs_from_cache(cache: &MimeCache) -> Result<Vec<(String, MimeType)>, Error> {
+        const STRIDE: usize = 12;
+
+        let start = cache.cache_header.glob_list_offset as usize;
+
+        let num_globs = get_u32_panics(cache.cache_data.as_slice(), start);
+
+        let list_start = start + 4;
+
+        let mut output = Vec::new();
+
+        for i in (list_start..list_start + num_globs as usize * STRIDE).step_by(STRIDE) {
+            let glob_offset = get_u32_panics(cache.cache_data.as_slice(), i) as usize;
+
+            let glob = CStr::from_bytes_until_nul(cache.cache_data.get(glob_offset..).unwrap())
+                .map_err(|_| Error::CstrUnterminated)?
+                .to_str()
+                .map_err(|_| Error::InvalidUTF8)?;
+
+            let mime_offset = get_u32_panics(cache.cache_data.as_slice(), i + 4) as usize;
+
+            let mime = CStr::from_bytes_until_nul(cache.cache_data.get(mime_offset..).unwrap())
+                .map_err(|_| Error::CstrUnterminated)?
+                .to_str()
+                .map_err(|_| Error::InvalidUTF8)?;
+
+            output.push((glob.to_string(), mime.to_string().into()));
+        }
+        Ok(output)
+    }
+
+    fn get_globs2_data(globs: &str) -> Result<Vec<(String, MimeType)>, Error> {
+        // alksjd
+        Err(Error::Globs2NotFound)
+    }
+}
+
+impl MimeSearcher {
+    pub fn new() -> Result<Self, Error> {
+        let mime_cache = MimeCache::new()?;
+        Ok(MimeSearcher {
+            globber: Globber::new(&mime_cache)?,
+            mime_cache,
+        })
+    }
+
+    pub fn find_icon_for_mimetype(&self, mime_type: &str) -> Result<MimeType, Error> {
+        self.mime_cache.find_icon_for_mimetype(mime_type)
     }
 }
 
@@ -162,7 +270,7 @@ mod test {
 
     #[test]
     fn mime_cache() {
-        assert!(MimeCache::new().is_ok())
+        assert!(MimeSearcher::new().is_ok())
     }
 
     #[test]
@@ -171,16 +279,27 @@ mod test {
         let start = std::time::Instant::now();
         assert_eq!(
             cache.find_icon_for_mimetype("font/otf"),
-            Ok("font-x-generic".to_string())
+            Ok("font-x-generic".to_string().into())
         );
         assert_eq!(
             cache.find_icon_for_mimetype("text/javascript"),
-            Ok("text-x-script".to_string())
+            Ok("text-x-script".to_string().into())
         );
         assert_eq!(
             cache.find_icon_for_mimetype("application/pdf"),
-            Ok("x-office-document".to_string())
+            Ok("x-office-document".to_string().into())
         );
         println!("Time to find icon: {:#?}", start.elapsed());
     }
+
+    // #[test]
+    // fn get_mimetype_for_filename() {
+    //     let cache = MimeSearcher::new().unwrap();
+    //     let start = std::time::Instant::now();
+    //     assert_eq!(
+    //         cache.glob_filename_to_mimetype("foo.pdf"),
+    //         Ok("font-x-generic".to_string())
+    //     );
+    //     println!("Time to find icon: {:#?}", start.elapsed());
+    // }
 }
