@@ -21,12 +21,6 @@ struct MimeCache {
     cache_data: Vec<u8>,
 }
 
-#[derive(Debug)]
-struct Globber {
-    globs2_data: String,
-    simple_globing_map: HashMap<String, MimeType>,
-}
-
 #[derive(Debug, PartialEq, Eq)]
 struct MimeCacheHeader {
     major_version: u16,
@@ -42,10 +36,24 @@ struct MimeCacheHeader {
     generic_icons_list_offset: u32,
 }
 
+#[derive(Debug)]
+struct Globber {
+    globs2_data: String,
+    simple_globing_map: HashMap<String, GlobEntry>,
+}
+
+#[derive(Debug)]
+struct GlobEntry {
+    weight: u8,
+    mime: MimeType,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum Error {
     MimeCacheNotFound,
     Globs2NotFound,
+    Globs2BadLine(String),
+    NotANumber,
     MissingHeader,
     MissingGenericIconsList,
     NoIconFound,
@@ -116,14 +124,28 @@ impl Globber {
         let mut hashmap = HashMap::new();
         for (k, v) in Self::get_globs_from_cache(cache)?
             .into_iter()
-            .filter(|(k, _)| k.starts_with('*') && !k.contains('?') && !k.contains('['))
+            .filter(|(k, _)| !k.contains('?') && !k.contains('['))
         {
-            hashmap.insert(k, v);
+            let Some(k) = k.strip_prefix(".*") else {
+                continue;
+            };
+
+            hashmap.insert(k.to_string(), v);
         }
 
         let globs2_data =
             std::fs::read_to_string("/usr/share/mime/globs2").map_err(|_| Error::Globs2NotFound)?;
 
+        for (k, v) in Self::get_globs2_data(&globs2_data)?
+            .into_iter()
+            .filter(|(k, _)| !k.contains('?') && !k.contains('['))
+        {
+            let Some(k) = k.strip_prefix(".*") else {
+                continue;
+            };
+
+            hashmap.insert(k.to_string(), v);
+        }
         println!("glob hashmap: {:#?}", hashmap);
 
         Ok(Globber {
@@ -144,7 +166,7 @@ impl Globber {
     // 4			CARD32		WEIGHT in lower 8 bits
     //                              FLAGS in rest:
     //                              0x100 = case-sensitive
-    fn get_globs_from_cache(cache: &MimeCache) -> Result<Vec<(String, MimeType)>, Error> {
+    fn get_globs_from_cache(cache: &MimeCache) -> Result<Vec<(String, GlobEntry)>, Error> {
         const STRIDE: usize = 12;
 
         let start = cache.cache_header.glob_list_offset as usize;
@@ -170,14 +192,47 @@ impl Globber {
                 .to_str()
                 .map_err(|_| Error::InvalidUTF8)?;
 
-            output.push((glob.to_string(), mime.to_string().into()));
+            let meta = get_u32_panics(cache.cache_data.as_slice(), i + 8) as usize;
+
+            let weight = (meta & 0xFF) as u8;
+
+            output.push((
+                glob.to_string(),
+                GlobEntry {
+                    mime: mime.to_string().into(),
+                    weight,
+                },
+            ));
         }
         Ok(output)
     }
 
-    fn get_globs2_data(globs: &str) -> Result<Vec<(String, MimeType)>, Error> {
-        // alksjd
-        Err(Error::Globs2NotFound)
+    fn get_globs2_data(globs: &str) -> Result<Vec<(String, GlobEntry)>, Error> {
+        let mut output = Vec::new();
+        for line in globs.lines() {
+            if line.starts_with('#') {
+                continue;
+            }
+            let line_conents: Vec<&str> = line.splitn(3, ':').collect();
+            if line_conents.len() != 3 {
+                return Err(Error::Globs2BadLine(line.to_string()));
+            }
+
+            let (weight_raw, mime_string, glob_string) = (
+                line_conents[0].to_string(),
+                line_conents[1].to_string(),
+                line_conents[2].to_string(),
+            );
+
+            output.push((
+                glob_string,
+                GlobEntry {
+                    weight: weight_raw.parse().map_err(|_| Error::NotANumber)?,
+                    mime: mime_string.into(),
+                },
+            ));
+        }
+        Ok(output)
     }
 }
 
@@ -270,7 +325,7 @@ mod test {
 
     #[test]
     fn mime_cache() {
-        assert!(MimeSearcher::new().is_ok())
+        // let searcher = MimeSearcher::new();
     }
 
     #[test]
@@ -292,14 +347,14 @@ mod test {
         println!("Time to find icon: {:#?}", start.elapsed());
     }
 
-    // #[test]
-    // fn get_mimetype_for_filename() {
-    //     let cache = MimeSearcher::new().unwrap();
-    //     let start = std::time::Instant::now();
-    //     assert_eq!(
-    //         cache.glob_filename_to_mimetype("foo.pdf"),
-    //         Ok("font-x-generic".to_string())
-    //     );
-    //     println!("Time to find icon: {:#?}", start.elapsed());
-    // }
+    #[test]
+    fn get_mimetype_for_filename() {
+        let cache = Globber::new(&MimeCache::new().unwrap()).unwrap();
+        let start = std::time::Instant::now();
+        // assert_eq!(
+        //     cache.glob_filename_to_mimetype("foo.pdf"),
+        //     Ok("font-x-generic".to_string())
+        // );
+        println!("Time to find icon: {:#?}", start.elapsed());
+    }
 }
