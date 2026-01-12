@@ -160,15 +160,15 @@ impl Globber {
         let globs2_data =
             std::fs::read_to_string("/usr/share/mime/globs2").map_err(|_| Error::Globs2NotFound)?;
 
-        for (k, v) in Self::get_globs2_data(&globs2_data)?
-            .into_iter()
-            .filter(|(k, _)| !k.contains('?') && !k.contains('['))
-        {
-            let Some(k) = k.strip_prefix("*.") else {
+        for (k, v) in Self::get_globs2_data(&globs2_data)?.into_iter() {
+            if let Some(k) = k.strip_prefix("*.")
+                && !(k.contains('?') || k.contains('['))
+            {
+                hashmap.insert(k.to_string(), v);
+            } else {
+                // TODO. Add to a vec for complex globs
                 continue;
             };
-
-            hashmap.insert(k.to_string(), v);
         }
         // println!("glob hashmap: {:#?}", hashmap);
 
@@ -179,10 +179,10 @@ impl Globber {
     }
 
     fn lookup_filename(&self, name: &std::path::Path) -> Option<MimeType> {
-        if let Some(ext) = name.extension() {
-            if let Some(entry) = self.simple_globing_map.get(ext.to_str()?) {
-                return Some(entry.mime.clone());
-            }
+        if let Some(ext) = name.extension()
+            && let Some(entry) = self.simple_globing_map.get(ext.to_str()?)
+        {
+            return Some(entry.mime.clone());
         }
         None
     }
@@ -276,15 +276,19 @@ impl MimeSearcher {
         })
     }
 
-    /// Finds the icon name for a mimetype. To get the actual image you need to use a crate like
-    /// `icon`
+    /// Finds the icon name for a mimetype. To get the actual image you would need to use a crate like
+    /// [`icon`](https://crates.io/crates/icon)
     pub fn find_icon_for_mimetype(&self, mime_type: MimeType) -> Result<String, Error> {
         self.mime_cache.find_icon_for_mimetype(mime_type)
     }
 
     /// Finds the mimetype from a filepath.
-    /// First looks at the file extension, then does proper globbing.
-    /// UNIMPLEMENTED:
+    ///
+    /// Looks at the content in MIME/globs2 and mime.cache.
+    /// It starts with a map of just *.xxx file extensions so that `path.extension()` can be used in
+    /// an internal hashmap.
+    ///
+    /// *This is unimplemented:*
     /// If those both fail, it can use magic (numbers).
     pub fn find_mimetype_from_filepath(&self, path: &Path) -> Option<MimeType> {
         self.globber.lookup_filename(path)
