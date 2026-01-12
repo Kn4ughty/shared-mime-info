@@ -61,7 +61,6 @@ impl MimeCache {
 
         let list_start = start + 4;
 
-        let mut count = 0;
         for i in (list_start..list_start + num_icons as usize * STRIDE).step_by(STRIDE) {
             let mime_type_offset = get_u32_panics(self.data.as_slice(), i) as usize;
             let found_mime_type =
@@ -82,10 +81,7 @@ impl MimeCache {
 
                 return Ok(icon_name.to_string());
             }
-
-            count += 1;
         }
-        assert_eq!(count, num_icons);
 
         Err(Error::NoIconFound)
     }
