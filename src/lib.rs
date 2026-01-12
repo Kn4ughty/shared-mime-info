@@ -87,7 +87,7 @@ impl MimeCache {
     // IconListEntry:
     // 4			CARD32		MIME_TYPE_OFFSET
     // 4			CARD32		ICON_NAME_OFFSET
-    fn find_icon_for_mimetype(&self, mime_type: &str) -> Result<MimeType, Error> {
+    fn find_icon_for_mimetype(&self, mime_type: MimeType) -> Result<String, Error> {
         const STRIDE: usize = 8;
 
         let start = self.cache_header.generic_icons_list_offset as usize;
@@ -98,11 +98,13 @@ impl MimeCache {
 
         for i in (list_start..list_start + num_icons as usize * STRIDE).step_by(STRIDE) {
             let mime_type_offset = get_u32_panics(self.cache_data.as_slice(), i) as usize;
-            let found_mime_type =
+            let found_mime_type: MimeType =
                 CStr::from_bytes_until_nul(self.cache_data.get(mime_type_offset..).unwrap())
                     .map_err(|_e| Error::CstrUnterminated)?
                     .to_str()
-                    .map_err(|_| Error::InvalidUTF8)?;
+                    .map_err(|_| Error::InvalidUTF8)?
+                    .to_string()
+                    .into();
 
             if found_mime_type == mime_type {
                 // Only load icon name if we have matched
@@ -113,7 +115,7 @@ impl MimeCache {
                         .to_str()
                         .map_err(|_| Error::InvalidUTF8)?;
 
-                return Ok(icon_name.to_string().into());
+                return Ok(icon_name.to_string());
             }
         }
 
@@ -254,7 +256,7 @@ impl MimeSearcher {
         })
     }
 
-    pub fn find_icon_for_mimetype(&self, mime_type: &str) -> Result<MimeType, Error> {
+    pub fn find_icon_for_mimetype(&self, mime_type: MimeType) -> Result<String, Error> {
         self.mime_cache.find_icon_for_mimetype(mime_type)
     }
 
@@ -341,15 +343,15 @@ mod test {
         let cache = MimeCache::new().unwrap();
         let start = std::time::Instant::now();
         assert_eq!(
-            cache.find_icon_for_mimetype("font/otf"),
+            cache.find_icon_for_mimetype(MimeType("font/otf".to_string())),
             Ok("font-x-generic".to_string().into())
         );
         assert_eq!(
-            cache.find_icon_for_mimetype("text/javascript"),
+            cache.find_icon_for_mimetype(MimeType("text/javascript".to_string())),
             Ok("text-x-script".to_string().into())
         );
         assert_eq!(
-            cache.find_icon_for_mimetype("application/pdf"),
+            cache.find_icon_for_mimetype(MimeType("application/pdf".to_string())),
             Ok("x-office-document".to_string().into())
         );
         println!("Time to find icon: {:#?}", start.elapsed());
