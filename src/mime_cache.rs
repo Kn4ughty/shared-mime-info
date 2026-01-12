@@ -57,17 +57,13 @@ impl MimeCache {
 
         let start = self.header.generic_icons_list_offset as usize;
 
-        let num_icons = self
-            .data
-            .get(start..start + 4)
-            .ok_or(Error::MissingGenericIconsList)?;
-        let num_icons = u8x4_u32(num_icons.try_into().unwrap());
+        let num_icons = get_u32_panics(self.data.as_slice(), start);
 
         let list_start = start + 4;
 
         let mut count = 0;
         for i in (list_start..list_start + num_icons as usize * STRIDE).step_by(STRIDE) {
-            let mime_type_offset = get_u32_unchecked(self.data.as_slice(), i) as usize;
+            let mime_type_offset = get_u32_panics(self.data.as_slice(), i) as usize;
             let found_mime_type =
                 std::ffi::CStr::from_bytes_until_nul(self.data.get(mime_type_offset..).unwrap())
                     .map_err(|_e| Error::CstrUnterminated)?
@@ -76,7 +72,7 @@ impl MimeCache {
 
             if found_mime_type == mime_type {
                 // Only load icon name if we have matched
-                let icon_name_offset = get_u32_unchecked(self.data.as_slice(), i + 4) as usize;
+                let icon_name_offset = get_u32_panics(self.data.as_slice(), i + 4) as usize;
                 let icon_name = std::ffi::CStr::from_bytes_until_nul(
                     self.data.get(icon_name_offset..).unwrap(),
                 )
@@ -130,9 +126,9 @@ fn u8x2_u16(input: &[u8; 2]) -> u16 {
     ((input[0] as u16) << 8) | input[1] as u16
 }
 
-fn get_u16_unchecked(data: &[u8], index: usize) -> u16 {
-    u8x2_u16(data[index..index + 2].try_into().unwrap())
-}
+// fn get_u16_panics(data: &[u8], index: usize) -> u16 {
+//     u8x2_u16(data[index..index + 2].try_into().unwrap())
+// }
 
 fn u8x4_u32(input: &[u8; 4]) -> u32 {
     ((input[0] as u32) << 24)
@@ -141,7 +137,8 @@ fn u8x4_u32(input: &[u8; 4]) -> u32 {
         | input[3] as u32
 }
 
-fn get_u32_unchecked(data: &[u8], index: usize) -> u32 {
+/// Panics all the time
+fn get_u32_panics(data: &[u8], index: usize) -> u32 {
     u8x4_u32(data[index..index + 4].try_into().unwrap())
 }
 
