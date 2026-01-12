@@ -19,8 +19,13 @@ struct MimeCacheHeader {
     generic_icons_list_offset: u32,
 }
 
+#[derive(Debug, PartialEq, Eq)]
 pub enum Error {
     MissingHeader,
+    MissingGenericIconsList,
+    NoIconFound,
+    CstrUnterminated,
+    InvalidUTF8,
 }
 
 impl MimeCache {
@@ -37,6 +42,56 @@ impl MimeCache {
 
             data: contents,
         })
+    }
+
+    // GenericIconsList:
+    // IconsList:
+    // 4			CARD32		N_ICONS
+    // 8*N_ICONS	IconListEntry
+    //
+    // IconListEntry:
+    // 4			CARD32		MIME_TYPE_OFFSET
+    // 4			CARD32		ICON_NAME_OFFSET
+    pub fn find_icon_for_mimetype(&self, mime_type: &str) -> Result<String, Error> {
+        const STRIDE: usize = 8;
+
+        let start = self.header.generic_icons_list_offset as usize;
+
+        let num_icons = self
+            .data
+            .get(start..start + 4)
+            .ok_or(Error::MissingGenericIconsList)?;
+        let num_icons = u8x4_u32(num_icons.try_into().unwrap());
+
+        let list_start = start + 4;
+
+        let mut count = 0;
+        for i in (list_start..list_start + num_icons as usize * STRIDE).step_by(STRIDE) {
+            let mime_type_offset = get_u32_unchecked(self.data.as_slice(), i) as usize;
+            let found_mime_type =
+                std::ffi::CStr::from_bytes_until_nul(self.data.get(mime_type_offset..).unwrap())
+                    .map_err(|_e| Error::CstrUnterminated)?
+                    .to_str()
+                    .map_err(|_| Error::InvalidUTF8)?;
+
+            if found_mime_type == mime_type {
+                // Only load icon name if we have matched
+                let icon_name_offset = get_u32_unchecked(self.data.as_slice(), i + 4) as usize;
+                let icon_name = std::ffi::CStr::from_bytes_until_nul(
+                    self.data.get(icon_name_offset..).unwrap(),
+                )
+                .map_err(|_e| Error::CstrUnterminated)?
+                .to_str()
+                .map_err(|_| Error::InvalidUTF8)?;
+
+                return Ok(icon_name.to_string());
+            }
+
+            count += 1;
+        }
+        assert_eq!(count, num_icons);
+
+        Err(Error::NoIconFound)
     }
 }
 
@@ -75,11 +130,19 @@ fn u8x2_u16(input: &[u8; 2]) -> u16 {
     ((input[0] as u16) << 8) | input[1] as u16
 }
 
+fn get_u16_unchecked(data: &[u8], index: usize) -> u16 {
+    u8x2_u16(data[index..index + 2].try_into().unwrap())
+}
+
 fn u8x4_u32(input: &[u8; 4]) -> u32 {
     ((input[0] as u32) << 24)
         | ((input[1] as u32) << (16))
         | ((input[2] as u32) << (8))
         | input[3] as u32
+}
+
+fn get_u32_unchecked(data: &[u8], index: usize) -> u32 {
+    u8x4_u32(data[index..index + 4].try_into().unwrap())
 }
 
 #[cfg(test)]
@@ -107,5 +170,24 @@ mod test {
     #[test]
     fn mime_cache() {
         assert!(MimeCache::new().is_ok())
+    }
+
+    #[test]
+    fn get_icon_for_mimetype() {
+        let cache = MimeCache::new().unwrap();
+        let start = std::time::Instant::now();
+        assert_eq!(
+            cache.find_icon_for_mimetype("font/otf"),
+            Ok("font-x-generic".to_string())
+        );
+        assert_eq!(
+            cache.find_icon_for_mimetype("text/javascript"),
+            Ok("text-x-script".to_string())
+        );
+        assert_eq!(
+            cache.find_icon_for_mimetype("application/pdf"),
+            Ok("x-office-document".to_string())
+        );
+        println!("Time to find icon: {:#?}", start.elapsed());
     }
 }
