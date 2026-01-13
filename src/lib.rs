@@ -169,21 +169,14 @@ impl MimeCache {
 impl Globber {
     fn new(cache: &MimeCache) -> Result<Self, Error> {
         let mut hashmap = HashMap::new();
-        for (k, v) in Self::get_globs_from_cache(cache)?
-            .into_iter()
-            .filter(|(k, _)| !k.contains('?') && !k.contains('['))
-        {
-            let Some(k) = k.strip_prefix(".*") else {
-                continue;
-            };
-
-            hashmap.insert(k.to_string(), v);
-        }
 
         let globs2_data =
             std::fs::read_to_string("/usr/share/mime/globs2").map_err(|_| Error::Globs2NotFound)?;
 
-        for (k, v) in Self::get_globs2_data(&globs2_data)?.into_iter() {
+        for (k, v) in Self::get_globs_from_cache(cache)?
+            .into_iter()
+            .chain(Self::get_globs2_data(&globs2_data)?.into_iter())
+        {
             if let Some(k) = k.strip_prefix("*.")
                 && !(k.contains('?') || k.contains('['))
             {
