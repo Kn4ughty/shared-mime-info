@@ -205,7 +205,7 @@ impl Globber {
         {
             return Some(entry.mime.clone());
         }
-
+        #[cfg(feature = "complex_globs")]
         for (k, v) in &self.complex_globs {
             let pattern = glob::Pattern::from_str(k).ok()?;
             if pattern.matches_path(name) {
