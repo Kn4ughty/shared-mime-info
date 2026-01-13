@@ -313,9 +313,8 @@ impl MimeSearcher {
     /// Looks at the content in MIME/globs2 and mime.cache.
     /// It starts with a map of just *.xxx file extensions so that `path.extension()` can be used in
     /// an internal hashmap.
+    /// If that fails, it uses a smaller `Vec` with full globbing logic.
     ///
-    /// *This is unimplemented:*
-    /// If those both fail, it can use magic (numbers).
     pub fn find_mimetype_from_filepath(&self, path: &Path) -> Option<MimeType> {
         self.globber.lookup_filename(path)
     }
