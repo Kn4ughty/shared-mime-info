@@ -181,7 +181,7 @@ impl Globber {
             .chain(Self::get_globs2_data(&globs2_data)?.into_iter())
         {
             if let Some(k) = k.strip_prefix("*.")
-                && !(k.contains('?') || k.contains('['))
+                && !(k.contains('?') || k.contains('[') || k.contains("*"))
             {
                 simple_globbing_map.insert(k.to_string(), v);
             } else {
