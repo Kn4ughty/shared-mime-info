@@ -18,10 +18,10 @@
 
 // https://specifications.freedesktop.org/shared-mime-info/0.21/ar01s02.html
 
-use std::{collections::HashMap, ffi::CStr, path::Path};
+use std::{cmp::Ordering, collections::HashMap, ffi::CStr, path::Path};
 
 /// String wrapper. Used to make typing clearer
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone, PartialOrd, Ord)]
 pub struct MimeType(pub String);
 
 impl From<String> for MimeType {
@@ -108,6 +108,9 @@ impl MimeCache {
     // 4			CARD32		MIME_TYPE_OFFSET
     // 4			CARD32		ICON_NAME_OFFSET
     fn find_icon_for_mimetype(&self, mime_type: MimeType) -> Result<String, Error> {
+        // Takes in a mimetype, e.g:
+        // application/pdf -> x-office-document
+
         const STRIDE: usize = 8;
 
         let start = self.cache_header.generic_icons_list_offset as usize;
@@ -116,8 +119,16 @@ impl MimeCache {
 
         let list_start = start + 4;
 
-        for i in (list_start..list_start + num_icons as usize * STRIDE).step_by(STRIDE) {
-            let mime_type_offset = get_u32_panics(self.cache_data.as_slice(), i) as usize;
+        // The given list is sorted, meaning a binary search can be done
+
+        let mut min_index: usize = 0;
+        let mut max_index: usize = num_icons as usize;
+        let mut index: usize = max_index / 2;
+
+        loop {
+            let ptr = list_start + index * STRIDE;
+
+            let mime_type_offset = get_u32_panics(self.cache_data.as_slice(), ptr) as usize;
             let found_mime_type: MimeType =
                 CStr::from_bytes_until_nul(self.cache_data.get(mime_type_offset..).unwrap())
                     .map_err(|_e| Error::CstrUnterminated)?
@@ -126,9 +137,17 @@ impl MimeCache {
                     .to_string()
                     .into();
 
-            if found_mime_type == mime_type {
+            let ord = mime_type.cmp(&found_mime_type);
+            if ord == Ordering::Less {
+                max_index = index;
+                index = (max_index + min_index) / 2;
+            } else if ord == Ordering::Greater {
+                min_index = index;
+                index = (max_index + min_index) / 2;
+            } else {
+                debug_assert_eq!(found_mime_type, mime_type);
                 // Only load icon name if we have matched
-                let icon_name_offset = get_u32_panics(self.cache_data.as_slice(), i + 4) as usize;
+                let icon_name_offset = get_u32_panics(self.cache_data.as_slice(), ptr + 4) as usize;
                 let icon_name =
                     CStr::from_bytes_until_nul(self.cache_data.get(icon_name_offset..).unwrap())
                         .map_err(|_e| Error::CstrUnterminated)?
@@ -136,6 +155,10 @@ impl MimeCache {
                         .map_err(|_| Error::InvalidUTF8)?;
 
                 return Ok(icon_name.to_string());
+            }
+
+            if index == max_index || index == min_index {
+                break;
             }
         }
 
@@ -351,6 +374,10 @@ mod test {
             cache.find_icon_for_mimetype(MimeType("application/pdf".to_string())),
             Ok("x-office-document".to_string().into())
         );
+        assert_eq!(
+            cache.find_icon_for_mimetype(MimeType("not_a_real_mimetype1234".to_string())),
+            Err(Error::NoIconFound)
+        );
         println!("Time to find icon: {:#?}", start.elapsed());
     }
 
@@ -370,6 +397,6 @@ mod test {
             cache.lookup_filename(&std::path::PathBuf::from("baz.md")),
             Some("text/markdown".to_string().into())
         );
-        println!("Time to find icon: {:#?}", start.elapsed());
+        println!("Time to find mimetype: {:#?}", start.elapsed());
     }
 }
