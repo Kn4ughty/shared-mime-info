@@ -199,15 +199,17 @@ impl Globber {
 
     fn lookup_filename(&self, name: &std::path::Path) -> Option<MimeType> {
         if let Some(ext) = name.extension()
-            && let Some(entry) = self.simple_globbing_map.get(ext.to_str()?)
+            && let Some(entry) = self
+                .simple_globbing_map
+                .get(&ext.to_str()?.to_ascii_lowercase())
         {
             return Some(entry.mime.clone());
-        } else {
-            for (k, v) in &self.complex_globs {
-                let pattern = glob::Pattern::from_str(k).ok()?;
-                if pattern.matches_path(name) {
-                    return Some(v.mime.clone());
-                }
+        }
+
+        for (k, v) in &self.complex_globs {
+            let pattern = glob::Pattern::from_str(k).ok()?;
+            if pattern.matches_path(name) {
+                return Some(v.mime.clone());
             }
         }
         None
