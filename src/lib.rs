@@ -18,7 +18,7 @@
 
 // https://specifications.freedesktop.org/shared-mime-info/0.21/ar01s02.html
 
-use std::{cmp::Ordering, collections::HashMap, ffi::CStr, path::Path};
+use std::{cmp::Ordering, collections::HashMap, ffi::CStr, path::Path, str::FromStr};
 
 /// String wrapper. Used to make typing clearer
 #[derive(Debug, PartialEq, Eq, Clone, PartialOrd, Ord)]
@@ -61,7 +61,8 @@ struct MimeCacheHeader {
 #[derive(Debug)]
 struct Globber {
     globs2_data: String,
-    simple_globing_map: HashMap<String, GlobEntry>,
+    complex_globs: Vec<(String, GlobEntry)>,
+    simple_globbing_map: HashMap<String, GlobEntry>,
 }
 
 #[derive(Debug)]
@@ -75,6 +76,7 @@ pub enum Error {
     MimeCacheNotFound,
     Globs2NotFound,
     Globs2BadLine(String),
+    InvalidGlob,
     NotANumber,
     MissingHeader,
     MissingGenericIconsList,
@@ -168,7 +170,8 @@ impl MimeCache {
 
 impl Globber {
     fn new(cache: &MimeCache) -> Result<Self, Error> {
-        let mut hashmap = HashMap::new();
+        let mut simple_globbing_map = HashMap::new();
+        let mut complex_globs = Vec::new();
 
         let globs2_data =
             std::fs::read_to_string("/usr/share/mime/globs2").map_err(|_| Error::Globs2NotFound)?;
@@ -180,25 +183,32 @@ impl Globber {
             if let Some(k) = k.strip_prefix("*.")
                 && !(k.contains('?') || k.contains('['))
             {
-                hashmap.insert(k.to_string(), v);
+                simple_globbing_map.insert(k.to_string(), v);
             } else {
-                // TODO. Add to a vec for complex globs
-                continue;
+                complex_globs.push((k, v));
             };
         }
         // println!("glob hashmap: {:#?}", hashmap);
 
         Ok(Globber {
             globs2_data,
-            simple_globing_map: hashmap,
+            simple_globbing_map,
+            complex_globs,
         })
     }
 
     fn lookup_filename(&self, name: &std::path::Path) -> Option<MimeType> {
         if let Some(ext) = name.extension()
-            && let Some(entry) = self.simple_globing_map.get(ext.to_str()?)
+            && let Some(entry) = self.simple_globbing_map.get(ext.to_str()?)
         {
             return Some(entry.mime.clone());
+        } else {
+            for (k, v) in &self.complex_globs {
+                let pattern = glob::Pattern::from_str(k).ok()?;
+                if pattern.matches_path(name) {
+                    return Some(v.mime.clone());
+                }
+            }
         }
         None
     }
@@ -389,6 +399,10 @@ mod test {
         assert_eq!(
             cache.lookup_filename(&std::path::PathBuf::from("baz.md")),
             Some("text/markdown".to_string().into())
+        );
+        assert_eq!(
+            cache.lookup_filename(&std::path::PathBuf::from("321.vdr")),
+            Some("video/mpeg".to_string().into())
         );
         println!("Time to find mimetype: {:#?}", start.elapsed());
     }
